@@ -3,3 +3,7 @@
 Cargo.lock
 .DS_Store
 Thumbs.db
+
+# QEMU debug + serial-log artifacts
+qemu.log
+uart*.log
