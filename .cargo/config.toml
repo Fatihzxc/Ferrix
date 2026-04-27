@@ -1,0 +1,19 @@
+[build]
+target = "armv7a-none-eabihf"
+
+[target.armv7a-none-eabihf]
+# QEMU runner notes:
+#   -display none          : no GUI window
+#   -serial null           : silence Zynq UART0  (chardev "serial0")
+#   -serial stdio          : route Zynq UART1 to this terminal
+#                            (UART1 is the real-board user UART, so the
+#                             same binary works here and on hardware)
+#   -kernel <ELF>          : load + jump to entry; cargo appends the path
+runner = "qemu-system-arm -M xilinx-zynq-a9 -display none -serial null -serial stdio -kernel"
+rustflags = [
+    "-C", "link-arg=-Tlinker.ld",
+    "-C", "link-arg=--nmagic",
+]
+
+[unstable]
+# (intentionally empty — no nightly features yet)

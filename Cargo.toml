@@ -1,0 +1,20 @@
+[package]
+name = "tikos"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "tikos"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+debug = true
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+debug = true
