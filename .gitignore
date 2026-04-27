@@ -7,3 +7,6 @@ Thumbs.db
 # QEMU debug + serial-log artifacts
 qemu.log
 uart*.log
+
+# Hardware capture artifacts
+com3-capture.*
