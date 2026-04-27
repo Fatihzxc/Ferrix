@@ -48,10 +48,12 @@ const CR_TXEN: u32 = 1 << 6;
 const SR_TXFULL: u32 = 1 << 4;
 
 // Baud-rate config: baud = uart_ref_clk / (CD * (BDIV + 1)).
-// BootROM default uart_ref_clk = 50 MHz (UG585 §25).
-//   CD=62, BDIV=6  ->  50_000_000 / (62 * 7) = 115207 baud (0.006% error from 115200).
-// If your board's BootROM/U-Boot left uart_ref_clk = 100 MHz instead, double CD to 124.
-const BAUD_CD: u32 = 62;
+// On this board, U-Boot programmed `uart_ref_clk = 100 MHz` (verified by
+// reading SLCR + watching what came out the wire).
+//   CD=124, BDIV=6  ->  100_000_000 / (124 * 7) = 115207 baud (0.006% error).
+// On a chip in BootROM-default state (uart_ref_clk = 50 MHz, UG585 §25),
+// halve CD to 62.
+const BAUD_CD: u32 = 124;
 const BAUD_BDIV: u32 = 6;
 
 /// Initialise a Zynq UART so writes to its FIFO actually transmit.
@@ -100,17 +102,43 @@ fn uart_putc_at(base: usize, c: u8) {
 //
 // `bl kmain` instead of `b kmain` so we keep a sane link register; if kmain
 // ever returned (it won't — its type is `!`) we'd at least not jump to junk.
-// Boot stub. We deliberately skip .bss zeroing here — kmain has no
-// BSS-resident statics yet, and a previous version of this loop was
-// faulting (see /log/2026-04-27-07-uart-driver). Once we add proper
-// statics and verify the linker symbols, the zero loop comes back.
+// Boot stub.
+//
+// On a real Zynq the chip arrives with whatever the BootROM / U-Boot left
+// behind: MMU on, caches on, page tables we know nothing about. We can't
+// reach our own peripherals through someone else's virtual address space,
+// so step one is to put the CPU into a known clean state — MMU off, both
+// caches off, TLBs flushed — before anything else.
+//
+// On QEMU `-kernel` the CPU starts with MMU/caches off already, so these
+// SCTLR writes are no-ops there. Same code, both worlds.
+//
+// .bss zeroing is still parked. Once we add a real BSS-resident static
+// we'll re-introduce a verified zero loop.
 global_asm!(
     r#"
     .section .text._start, "ax"
     .global _start
     _start:
+        // -- 1. Disable MMU + I/D caches (clear M, C, I bits in SCTLR) --
+        mrc     p15, 0, r0, c1, c0, 0       @ r0 = SCTLR
+        bic     r0, r0, #(1 << 0)           @ M  = 0  (MMU off)
+        bic     r0, r0, #(1 << 2)           @ C  = 0  (D-cache off)
+        bic     r0, r0, #(1 << 12)          @ I  = 0  (I-cache off)
+        mcr     p15, 0, r0, c1, c0, 0       @ SCTLR = r0
+        isb
+
+        // -- 2. Invalidate all TLBs and the I-cache --
+        mov     r0, #0
+        mcr     p15, 0, r0, c8, c7, 0       @ TLBIALL (all TLBs)
+        mcr     p15, 0, r0, c7, c5, 0       @ ICIALLU (whole I-cache)
+        dsb
+        isb
+
+        // -- 3. Set up a stack and enter Rust --
         ldr     sp, =_stack_top
         bl      kmain
+
     1:  wfe
         b       1b
     "#
