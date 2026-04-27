@@ -32,10 +32,12 @@ const UART0_BASE: usize = 0xE000_0000;
 const UART1_BASE: usize = 0xE000_1000;
 
 // Register offsets, per Xilinx UG585 ch.19 (UART register map).
-const UART_OFF_CR: usize = 0x00;   // Control Register
-const UART_OFF_MR: usize = 0x04;   // Mode Register
-const UART_OFF_SR: usize = 0x2C;   // Channel Status Register
-const UART_OFF_FIFO: usize = 0x30; // TX/RX FIFO
+const UART_OFF_CR: usize = 0x00;     // Control Register
+const UART_OFF_MR: usize = 0x04;     // Mode Register
+const UART_OFF_BAUDGEN: usize = 0x18;// Baud-rate generator (CD)
+const UART_OFF_SR: usize = 0x2C;     // Channel Status Register
+const UART_OFF_FIFO: usize = 0x30;   // TX/RX FIFO
+const UART_OFF_BAUDDIV: usize = 0x34;// Baud-rate divider (BDIV)
 
 // Control Register bits we care about.
 const CR_STTBRGEN: u32 = 1 << 1; // start baud-rate generator
@@ -45,20 +47,31 @@ const CR_TXEN: u32 = 1 << 6;
 // Status Register bits.
 const SR_TXFULL: u32 = 1 << 4;
 
+// Baud-rate config: baud = uart_ref_clk / (CD * (BDIV + 1)).
+// BootROM default uart_ref_clk = 50 MHz (UG585 §25).
+//   CD=62, BDIV=6  ->  50_000_000 / (62 * 7) = 115207 baud (0.006% error from 115200).
+// If your board's BootROM/U-Boot left uart_ref_clk = 100 MHz instead, double CD to 124.
+const BAUD_CD: u32 = 62;
+const BAUD_BDIV: u32 = 6;
+
 /// Initialise a Zynq UART so writes to its FIFO actually transmit.
-/// QEMU's Cadence UART model boots with TX disabled, so without this the
-/// FIFO writes are silently dropped.
+/// On QEMU this just enables TX (the chardev backend ignores baud-rate
+/// programming). On real silicon this also sets 115200 8N1 explicitly,
+/// so we don't depend on whatever the BootROM left in the registers.
 fn uart_init(base: usize) {
     let cr = (base + UART_OFF_CR) as *mut u32;
     let mr = (base + UART_OFF_MR) as *mut u32;
+    let baudgen = (base + UART_OFF_BAUDGEN) as *mut u32;
+    let bauddiv = (base + UART_OFF_BAUDDIV) as *mut u32;
     unsafe {
-        // 8 data bits, 1 stop bit, no parity, normal mode (MR power-on
-        // default is fine on QEMU; we set it explicitly so behavior is
-        // not "happens to match the chip's reset value").
+        // 8 data bits, 1 stop bit, no parity, normal mode.
         //   bits [4:3]  parity = 0b100 (no parity)
         //   bits [2:1]  char length = 0b00 (8 bits)
-        //   bit  [0]    clock select = 0 (uart_ref_clk / 1)
+        //   bit  [0]    clock select = 0 (uart_ref_clk / 1, no /8 prescale)
         write_volatile(mr, 0b100_00 << 3);
+        // Baud-rate generator + divider — see BAUD_CD / BAUD_BDIV above.
+        write_volatile(baudgen, BAUD_CD);
+        write_volatile(bauddiv, BAUD_BDIV);
         // Enable TX + RX, start baud-rate generator. TXDIS / RXDIS
         // bits are explicitly NOT set, so the corresponding _EN bits stick.
         write_volatile(cr, CR_STTBRGEN | CR_RXEN | CR_TXEN);
