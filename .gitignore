@@ -10,3 +10,4 @@ uart*.log
 
 # Hardware capture artifacts
 com3-capture.*
+.claude

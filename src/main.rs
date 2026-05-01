@@ -15,46 +15,49 @@ use core::arch::{asm, global_asm};
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
-// ---------- Zynq UART1 register map (subset, from UG585 ch.19) ----------
+// ---------- Zynq UART register map (UG585 ch.33 / Appendix B) ----------
 //
-// UART1_BASE = 0xE0001000  (UART0 is at 0xE0000000)
-//
-// Offsets we use:
-//   +0x2C  Channel Status Register (RO)  — bit 4 (TXFULL) is what we poll.
-//   +0x30  Channel FIFO              (WO) — write a byte here to transmit.
+// Absolute base addresses (UG585 p.1775, register summary table):
+//   UART0 = 0xE0000000    UART1 = 0xE0001000
 //
 // On QEMU's UART model, writing to FIFO sends bytes immediately. On real
 // silicon we will eventually need to set baud rate, mode, and enable TX —
 // but the on-board boot ROM / our future bootloader will leave the UART
 // in a usable state for the first revision.
 
-const UART0_BASE: usize = 0xE000_0000;
-const UART1_BASE: usize = 0xE000_1000;
+const UART0_BASE: usize = 0xE000_0000; // UG585 p.1775
+const UART1_BASE: usize = 0xE000_1000; // UG585 p.1775
 
-// Register offsets, per Xilinx UG585 ch.19 (UART register map).
-const UART_OFF_CR: usize = 0x00;     // Control Register
-const UART_OFF_MR: usize = 0x04;     // Mode Register
-const UART_OFF_BAUDGEN: usize = 0x18;// Baud-rate generator (CD)
-const UART_OFF_SR: usize = 0x2C;     // Channel Status Register
-const UART_OFF_FIFO: usize = 0x30;   // TX/RX FIFO
-const UART_OFF_BAUDDIV: usize = 0x34;// Baud-rate divider (BDIV)
+// Register offsets (UG585 p.1775, register summary table).
+const UART_OFF_CR: usize = 0x00;      // Control Register         UG585 p.1776-1777
+const UART_OFF_MR: usize = 0x04;      // Mode Register            UG585 p.1777-1778
+const UART_OFF_BAUDGEN: usize = 0x18; // Baud Rate Generator (CD) UG585 p.1785
+const UART_OFF_SR: usize = 0x2C;      // Channel Status Register  UG585 p.1786-1787
+const UART_OFF_FIFO: usize = 0x30;    // TX/RX FIFO               UG585 p.1790
+const UART_OFF_BAUDDIV: usize = 0x34; // Baud Rate Divider (BDIV) UG585 p.1792
 
-// Control Register bits we care about.
-const CR_STTBRGEN: u32 = 1 << 1; // start baud-rate generator
-const CR_RXEN: u32 = 1 << 4;
-const CR_TXEN: u32 = 1 << 6;
+// Control Register bit fields (UG585 p.1776-1777, XUARTPS_CR_OFFSET).
+//   bit 0: RXRST     bit 1: TXRST     bit 2: RXEN    bit 3: RXDIS
+//   bit 4: TXEN      bit 5: TXDIS     bit 6: TORST   bit 7: STARTBRK   bit 8: STOPBRK
+const CR_RXRST: u32 = 1 << 0;  // Software reset for Rx data path (self-clearing)
+const CR_TXRST: u32 = 1 << 1;  // Software reset for Tx data path (self-clearing)
+const CR_RXEN: u32 = 1 << 2;   // Receive enable
+const CR_RXDIS: u32 = 1 << 3;  // Receive disable
+const CR_TXEN: u32 = 1 << 4;   // Transmit enable
+const CR_TXDIS: u32 = 1 << 5;  // Transmit disable
 
-// Status Register bits.
-const SR_TXFULL: u32 = 1 << 4;
+// Channel Status Register bit fields (UG585 p.1786-1787, XUARTPS_SR_OFFSET).
+const SR_TXFULL: u32 = 1 << 4; // TX FIFO full — poll before writing FIFO
 
-// Baud-rate config: baud = uart_ref_clk / (CD * (BDIV + 1)).
-// On this board, U-Boot programmed `uart_ref_clk = 100 MHz` (verified by
-// reading SLCR + watching what came out the wire).
-//   CD=124, BDIV=6  ->  100_000_000 / (124 * 7) = 115207 baud (0.006% error).
-// On a chip in BootROM-default state (uart_ref_clk = 50 MHz, UG585 §25),
-// halve CD to 62.
-const BAUD_CD: u32 = 124;
-const BAUD_BDIV: u32 = 6;
+// Baud-rate config (UG585 p.1785 BAUDGEN + p.1792 BAUDDIV):
+//   baud = uart_ref_clk / (CD * (BDIV + 1))
+// In QSPI boot mode, BootROM brings up the IO PLL and configures
+// SLCR.UART_CLK_CTRL so uart_ref_clk = 100 MHz.
+//   CD=124, BDIV=6  ->  100_000_000 / (124 * 7) = 115207 baud (0.006% err).
+// Pure JTAG-park BootROM mode leaves uart_ref_clk = 50 MHz; halve CD to 62
+// in that scenario.
+const BAUD_CD: u32 = 124;    // BAUDGEN CD value, bits [15:0], reset=0x28B
+const BAUD_BDIV: u32 = 6;    // BAUDDIV BDIV value, bits [7:0], reset=0xF
 
 /// Initialise a Zynq UART so writes to its FIFO actually transmit.
 /// On QEMU this just enables TX (the chardev backend ignores baud-rate
@@ -66,17 +69,21 @@ fn uart_init(base: usize) {
     let baudgen = (base + UART_OFF_BAUDGEN) as *mut u32;
     let bauddiv = (base + UART_OFF_BAUDDIV) as *mut u32;
     unsafe {
-        // 8 data bits, 1 stop bit, no parity, normal mode.
-        //   bits [4:3]  parity = 0b100 (no parity)
-        //   bits [2:1]  char length = 0b00 (8 bits)
-        //   bit  [0]    clock select = 0 (uart_ref_clk / 1, no /8 prescale)
-        write_volatile(mr, 0b100_00 << 3);
+        // MR: 8N1, normal mode (UG585 p.1777-1778).
+        //   bits [9:8] CHMODE   = 00   (normal)
+        //   bits [7:6] NBSTOP   = 00   (1 stop bit)
+        //   bits [5:3] PAR      = 100  (no parity)
+        //   bits [2:1] CHRL     = 00   (8 bits)
+        //   bit  [0]   CLKSEL   = 0    (uart_ref_clk, no /8 prescale)
+        //   => 0b000_00_100_00_0 = 0x20
+        write_volatile(mr, 0x20);
         // Baud-rate generator + divider — see BAUD_CD / BAUD_BDIV above.
         write_volatile(baudgen, BAUD_CD);
         write_volatile(bauddiv, BAUD_BDIV);
-        // Enable TX + RX, start baud-rate generator. TXDIS / RXDIS
-        // bits are explicitly NOT set, so the corresponding _EN bits stick.
-        write_volatile(cr, CR_STTBRGEN | CR_RXEN | CR_TXEN);
+        // Reset TX/RX paths, then enable both. TXDIS / RXDIS bits are
+        // explicitly NOT set, so the _EN bits stick.
+        // TXRST / RXRST are self-clearing — they reset the data paths once.
+        write_volatile(cr, CR_TXRST | CR_RXRST | CR_TXEN | CR_RXEN);
     }
 }
 
@@ -121,6 +128,8 @@ global_asm!(
     .global _start
     _start:
         // -- 1. Disable MMU + I/D caches (clear M, C, I bits in SCTLR) --
+        //    ARM ARM v7-A: SCTLR = p15, 0, <Rd>, c1, c0, 0
+        //    Bit 0 (M)=MMU enable, Bit 2 (C)=D-cache, Bit 12 (I)=I-cache
         mrc     p15, 0, r0, c1, c0, 0       @ r0 = SCTLR
         bic     r0, r0, #(1 << 0)           @ M  = 0  (MMU off)
         bic     r0, r0, #(1 << 2)           @ C  = 0  (D-cache off)
@@ -129,9 +138,11 @@ global_asm!(
         isb
 
         // -- 2. Invalidate all TLBs and the I-cache --
+        //    ARM ARM: TLBIALL = p15, 0, <Rd>, c8, c7, 0
+        //    ARM ARM: ICIALLU = p15, 0, <Rd>, c7, c5, 0
         mov     r0, #0
-        mcr     p15, 0, r0, c8, c7, 0       @ TLBIALL (all TLBs)
-        mcr     p15, 0, r0, c7, c5, 0       @ ICIALLU (whole I-cache)
+        mcr     p15, 0, r0, c8, c7, 0       @ TLBIALL (invalidate all TLBs)
+        mcr     p15, 0, r0, c7, c5, 0       @ ICIALLU (invalidate entire I-cache)
         dsb
         isb
 
