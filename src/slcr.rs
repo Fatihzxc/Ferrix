@@ -172,13 +172,34 @@ fn io_pll_configure() {
     }
 }
 
+/// Configure UART_CLK_CTRL: source = IO_PLL (1000 MHz), divisor = 10
+/// → uart_ref_clk = 100 MHz. Enable both UART0 and UART1 clocks.
+///
+/// Single read-modify-write — preserves reserved bits BootROM may have
+/// touched. No polling: clock divider takes effect on the next edge,
+/// no "lock" concept to wait for.
+///
+/// Depends on `io_pll_configure()` having run first; otherwise IO_PLL
+/// output frequency is undefined and the 100 MHz target is meaningless.
+fn uart_clk_configure() {
+    let p = (SLCR_BASE + UART_CLK_CTRL) as *mut u32;
+    unsafe {
+        let mut v = read_volatile(p);
+        // Clear DIVISOR + SRCSEL fields, then set them via UART_CLK_TARGET.
+        // Reserved/clock-ramp bits stay untouched.
+        v &= !(UART_CLK_DIVISOR_MASK | UART_CLK_SRCSEL_MASK);
+        v |= UART_CLK_TARGET; // (10 << 8) | CLKACT0 | CLKACT1
+        write_volatile(p, v);
+    }
+}
+
 /// Bring up SLCR-controlled peripherals so UART1 works without BootROM
-/// help (JTAG-park mode). Helpers (UART clock, MIO routing, tri-state)
-/// are added one teaching point at a time in M2.5 commits 03-05.
+/// help (JTAG-park mode). Helpers (MIO routing, tri-state) are added
+/// one teaching point at a time in M2.5 commits 04-05.
 pub fn init() {
     unlock();
     io_pll_configure();
-    // uart_clk_configure();    — M2.5 commit 03
+    uart_clk_configure();
     // mio_route_uart1();       — M2.5 commit 04
     // mst_tri_clear_uart1();   — M2.5 commit 05
     lock();
