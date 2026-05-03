@@ -17,3 +17,5 @@ AGENTS.md
 docs/*
 !docs/QEMU_DIFF.md
 vault/
+ROADMAP.md
+CLAUDE.md
