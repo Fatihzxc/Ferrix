@@ -21,6 +21,11 @@ SECTIONS
 {
     .text :
     {
+        /* Vector table must sit at the very start of the kernel image so
+         * VBAR = ORIGIN(RAM) = 0xFFFC0000 points at it. The reset entry
+         * (offset 0x00) branches to _start, so BootROM's "PC=kernel base"
+         * jump still lands correctly. */
+        KEEP(*(.text.vectors))
         KEEP(*(.text._start))
         *(.text .text.*)
     } > RAM

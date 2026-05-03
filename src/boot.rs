@@ -43,7 +43,15 @@ global_asm!(
         dsb
         isb
 
-        // -- 3. Set up a stack and enter Rust --
+        // -- 3. Program VBAR to the kernel base (vector table lives here) --
+        //    ARM ARM v7-A §B4.1.156: VBAR = p15, 0, <Rt>, c12, c0, 0
+        //    SCTLR.V (bit 13) is cleared above, so the CPU consults VBAR
+        //    on exception entry instead of the high-vector base 0xFFFF0000.
+        ldr     r0, =_vector_table
+        mcr     p15, 0, r0, c12, c0, 0      @ VBAR = _vector_table
+        isb
+
+        // -- 4. Set up a stack and enter Rust --
         ldr     sp, =_stack_top
         bl      kmain
 

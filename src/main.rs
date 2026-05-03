@@ -18,6 +18,7 @@ use core::panic::PanicInfo;
 mod boot;
 mod slcr;
 mod uart;
+mod vectors;
 
 /// Crude busy-wait. Real timing comes later when we set up the
 /// Cortex-A9 generic timer or the Zynq private timer.
@@ -45,6 +46,11 @@ pub extern "C" fn kmain() -> ! {
     }
 
     uart::puts(b"TikOS: done. Ctrl-A then X to quit QEMU.\n");
+
+    // M3 vector-table smoke test: trigger an SVC. CPU jumps via VBAR + 0x08
+    // to svc_handler, which calls on_svc (UART "TikOS: SVC") and parks in wfe.
+    unsafe { asm!("svc #0") };
+
     loop {
         unsafe { asm!("wfe") };
     }
