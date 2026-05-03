@@ -207,14 +207,29 @@ fn mio_route_uart1() {
     }
 }
 
+/// Release the master tri-state on MIO pins 48 and 49 so UART1 TX/RX
+/// can actually drive the line. `MST_TRI1` covers pins 32-53; pin N's
+/// bit is at position N-32. Reset value is all-ones (every pin
+/// tri-stated) — we clear only bits 16 and 17 and **must preserve the
+/// rest** because other pins (CH340_RST, JTAG, etc.) need their own
+/// tri-state state. Hence the read-modify-write.
+fn mst_tri_clear_uart1() {
+    let p = (SLCR_BASE + MST_TRI1) as *mut u32;
+    unsafe {
+        let mut v = read_volatile(p);
+        v &= !(MST_TRI_PIN48_BIT | MST_TRI_PIN49_BIT);
+        write_volatile(p, v);
+    }
+}
+
 /// Bring up SLCR-controlled peripherals so UART1 works without BootROM
-/// help (JTAG-park mode). Helper (tri-state release) is added in M2.5
-/// commit 05.
+/// help (JTAG-park mode). Full M2.5 chain: PLL → UART clock → MIO mux
+/// → tri-state release.
 pub fn init() {
     unlock();
     io_pll_configure();
     uart_clk_configure();
     mio_route_uart1();
-    // mst_tri_clear_uart1();   — M2.5 commit 05
+    mst_tri_clear_uart1();
     lock();
 }
