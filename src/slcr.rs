@@ -100,7 +100,7 @@ pub const MST_TRI_PIN49_BIT: u32 = 1 << (49 - 32); // bit 17
 // configuration must be bracketed by an unlock + lock pair. Locking is
 // manual (no self-clearing).
 
-use core::ptr::write_volatile;
+use core::ptr::{read_volatile, write_volatile};
 
 fn unlock() {
     let p = (SLCR_BASE + SLCR_UNLOCK) as *mut u32;
@@ -112,13 +112,72 @@ fn lock() {
     unsafe { write_volatile(p, SLCR_LOCK_KEY) };
 }
 
+/// Reconfigure IO_PLL to FDIV=30 (PS_CLK 33.333 MHz × 30 = 1000 MHz),
+/// glitch-free. PLL is a feedback loop; FDIV cannot change while it
+/// runs, so the standard reconfiguration sequence is:
+///
+///   1. bypass        — output sources PS_CLK directly (glitch-free)
+///   2. reset         — feedback loop stops, FDIV becomes writable
+///   3. write FDIV    — read-modify-write preserves other bits
+///   4. drop reset    — feedback loop restarts with new divisor
+///   5. wait for LOCK — `PLL_STATUS.IO_PLL_LOCK` (bit 2). NOT `STABLE`
+///                      (bit 5) — STABLE is true while bypassed too,
+///                      which would falsely signal "ok" before lock.
+///   6. drop bypass   — output switches to the locked PLL frequency
+///
+/// Idempotent: in QSPI boot mode BootROM has already configured PLL,
+/// but driving it through bypass+reset is harmless (we run from OCM,
+/// not flash, so the brief clock interruption affects nothing live).
+fn io_pll_configure() {
+    let ctrl = (SLCR_BASE + IO_PLL_CTRL) as *mut u32;
+    let status = (SLCR_BASE + PLL_STATUS) as *const u32;
+
+    unsafe {
+        let mut v = read_volatile(ctrl);
+
+        // 1. bypass
+        v |= IO_PLL_BYPASS_FORCE;
+        write_volatile(ctrl, v);
+
+        // 2. reset
+        v |= IO_PLL_RESET;
+        write_volatile(ctrl, v);
+
+        // 3. new FDIV (preserve every other bit)
+        v = (v & !IO_PLL_FDIV_MASK) | (IO_PLL_TARGET_FDIV << IO_PLL_FDIV_SHIFT);
+        write_volatile(ctrl, v);
+
+        // 4. drop reset
+        v &= !IO_PLL_RESET;
+        write_volatile(ctrl, v);
+
+        // 5. wait for LOCK. Budget = 50_000 — Xilinx ps7_init uses 4_000;
+        // ours is conservative. PLL_STATUS = 0x3F constant in QEMU, so
+        // the loop exits on first iteration there; on real silicon it
+        // typically locks in <100 µs.
+        let mut budget: u32 = 50_000;
+        loop {
+            if (read_volatile(status) & PLL_STATUS_IO_PLL_LOCK) != 0 {
+                break;
+            }
+            if budget == 0 {
+                panic!("IO_PLL did not lock");
+            }
+            budget -= 1;
+        }
+
+        // 6. drop bypass
+        v &= !IO_PLL_BYPASS_FORCE;
+        write_volatile(ctrl, v);
+    }
+}
+
 /// Bring up SLCR-controlled peripherals so UART1 works without BootROM
-/// help (JTAG-park mode). Currently just brackets future helpers between
-/// unlock and lock; the helpers (IO PLL, UART clock, MIO routing,
-/// tri-state) are added one teaching point at a time in M2.5 commits 02-05.
+/// help (JTAG-park mode). Helpers (UART clock, MIO routing, tri-state)
+/// are added one teaching point at a time in M2.5 commits 03-05.
 pub fn init() {
     unlock();
-    // io_pll_configure();      — M2.5 commit 02
+    io_pll_configure();
     // uart_clk_configure();    — M2.5 commit 03
     // mio_route_uart1();       — M2.5 commit 04
     // mst_tri_clear_uart1();   — M2.5 commit 05
