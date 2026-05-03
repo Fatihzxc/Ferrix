@@ -24,8 +24,7 @@ Phase 0 / week 1. Nothing works yet. See [roadmap](#roadmap) below.
 
 - **Board**: ZYNQ7000 XC7Z010/XC7Z020 development board
 - **SoC**: XC7Z010-CLG400 (Zynq-7010, dual-core Cortex-A9 @ 667 MHz)
-- **Programmer**: Xilinx USB JTAG (included with board)
-- **Host**: Ubuntu for build/flash, macOS M2 for writing
+- **Programmer**: FT232H (included with board)
 
 ## Roadmap
 
