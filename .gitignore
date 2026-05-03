@@ -11,3 +11,9 @@ uart*.log
 # Hardware capture artifacts
 com3-capture.*
 .claude
+
+# Local-only project material (not part of public repo right now)
+AGENTS.md
+docs/*
+!docs/QEMU_DIFF.md
+vault/
