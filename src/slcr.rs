@@ -193,14 +193,28 @@ fn uart_clk_configure() {
     }
 }
 
+/// Route MIO pins 48 and 49 to UART1 TX/RX (L3_SEL=7), 1.8 V LVCMOS,
+/// fast slew, RX with pull-up so the line doesn't float.
+///
+/// Atomic full-value write (no RMW): the values fully specify each
+/// field; whatever BootROM left is replaced. Two writes — one per pin.
+fn mio_route_uart1() {
+    let tx = (SLCR_BASE + MIO_PIN_48_OFF) as *mut u32;
+    let rx = (SLCR_BASE + MIO_PIN_49_OFF) as *mut u32;
+    unsafe {
+        write_volatile(tx, MIO_PIN_UART1_TX_VAL);
+        write_volatile(rx, MIO_PIN_UART1_RX_VAL);
+    }
+}
+
 /// Bring up SLCR-controlled peripherals so UART1 works without BootROM
-/// help (JTAG-park mode). Helpers (MIO routing, tri-state) are added
-/// one teaching point at a time in M2.5 commits 04-05.
+/// help (JTAG-park mode). Helper (tri-state release) is added in M2.5
+/// commit 05.
 pub fn init() {
     unlock();
     io_pll_configure();
     uart_clk_configure();
-    // mio_route_uart1();       — M2.5 commit 04
+    mio_route_uart1();
     // mst_tri_clear_uart1();   — M2.5 commit 05
     lock();
 }
