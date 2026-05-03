@@ -93,3 +93,34 @@ pub const MST_TRI1: usize = 0x0810; // pin 32-53, reset=0xFFFFFFFF (all tri-stat
 // Pin N in MST_TRI1: bit position = N - 32
 pub const MST_TRI_PIN48_BIT: u32 = 1 << (48 - 32); // bit 16
 pub const MST_TRI_PIN49_BIT: u32 = 1 << (49 - 32); // bit 17
+
+// ---------- Helpers ----------
+//
+// SLCR registers are write-protected on reset. Any clock / MIO / tri-state
+// configuration must be bracketed by an unlock + lock pair. Locking is
+// manual (no self-clearing).
+
+use core::ptr::write_volatile;
+
+fn unlock() {
+    let p = (SLCR_BASE + SLCR_UNLOCK) as *mut u32;
+    unsafe { write_volatile(p, SLCR_UNLOCK_KEY) };
+}
+
+fn lock() {
+    let p = (SLCR_BASE + SLCR_LOCK) as *mut u32;
+    unsafe { write_volatile(p, SLCR_LOCK_KEY) };
+}
+
+/// Bring up SLCR-controlled peripherals so UART1 works without BootROM
+/// help (JTAG-park mode). Currently just brackets future helpers between
+/// unlock and lock; the helpers (IO PLL, UART clock, MIO routing,
+/// tri-state) are added one teaching point at a time in M2.5 commits 02-05.
+pub fn init() {
+    unlock();
+    // io_pll_configure();      — M2.5 commit 02
+    // uart_clk_configure();    — M2.5 commit 03
+    // mio_route_uart1();       — M2.5 commit 04
+    // mst_tri_clear_uart1();   — M2.5 commit 05
+    lock();
+}

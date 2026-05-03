@@ -29,6 +29,7 @@ fn delay_busy(loops: u32) {
 
 #[no_mangle]
 pub extern "C" fn kmain() -> ! {
+    slcr::init();
     uart::init(uart::UART0_BASE);
     uart::init(uart::UART1_BASE);
     uart::puts(b"TikOS: hello from Cortex-A9 over UART1\n");
